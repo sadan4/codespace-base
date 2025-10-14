@@ -1,18 +1,47 @@
+#include <cassert>
+#include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
-#include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
+using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 
 namespace {
+bool isWhitespace(char c) {
+  switch (c) {
+  case ' ':
+  case '\n':
+  case '\t':
+    return true;
+  default:
+    return false;
+  }
+}
+constexpr void triml(std::string &str) {
+  while (!str.empty() && isWhitespace(str.back())) {
+    str.erase(str.end() - 1, str.end());
+  }
+}
+constexpr void trimr(std::string &str) {
+  while (!str.empty() && isWhitespace(str.front())) {
+    str.erase(str.begin(), str.begin() + 1);
+  }
+}
+constexpr void trim(std::string &str) {
+  triml(str);
+  trimr(str);
+}
 std::string getStdinNonInteractive() {
 
   if (isatty(STDIN_FILENO)) {
@@ -75,60 +104,30 @@ std::string buildType(const fs::file_type &type) {
   }
 }
 std::string formatPath(const fs::path &path) {
-  // std::error_code ec;
-  // const auto entry = fs::status(path, ec);
-  // if (ec) {
-  //   return std::format("ERROR: {}", ec.message());
-  // }
-  // const auto perms = buildPerms(entry.permissions());
-  // const auto type = buildType(entry.type());
-  // return std::format("{} {} {}", perms, std::string{path}, type);
-  static const char *PROG_NAME = "file";
-  std::vector<const char *> _cmd = {PROG_NAME, path.c_str(), nullptr};
-  auto cmd = const_cast<char *const *>(_cmd.data());
-  int stdoutPipe[2] = {-1, -1};
-  // int stderrPipe[2] = {-1, -1};
-  if (pipe(stdoutPipe)) {
-    throw std::runtime_error("pipe failed");
+  std::string cmd = std::format("file {}", std::string{path});
+  FILE *fd = popen(cmd.c_str(), "r");
+  char buffer[512];
+  auto bytesRead = 0uz;
+  std::stringstream str;
+  while ((bytesRead = std::fread(buffer, sizeof(*buffer), sizeof(buffer), fd)) >
+         0) {
+    str.write(buffer, bytesRead);
   }
-
-  const int pid = fork();
-  if (pid == -1) {
-    throw std::runtime_error("vfork failed");
-  } else if (pid) {
-    const auto stdoutFd = stdoutPipe[0];
-    char buffer[512];
-    int bytesRead;
-    std::stringstream ret;
-    while ((bytesRead = read(stdoutFd, buffer, sizeof(buffer)) > 0)) {
-      ret.write(buffer, bytesRead);
-    }
-    close(stdoutFd);
-    return ret.str();
-  } else {
-    // child
-    dup2(stdoutPipe[1], STDOUT_FILENO);
-    // dup2(stderrPipe[1], STDERR_FILENO);
-    execvp(PROG_NAME, cmd);
-    throw std::runtime_error("execvp failed");
+  if (bytesRead == -1) {
+    std::perror("read");
+    std::abort();
   }
+  std::fclose(fd);
+  auto ret = str.str();
+  trim(ret);
+  return ret;
 }
 void printOtherOpenFds() {
+  std::cout << "Open fds" << '\n';
   for (auto const &openFd : listOtherOpenFds()) {
-
-    // if (openFd.is_regular_file()) {
-    //   std::cout << std::format("fd: {} = Unexpected Regular File",
-    //                            std::string{openFd.path()})
-    //             << std::endl;
-    // } else if (openFd.is_directory()) {
-    //   std::cout << std::format("fd: {} = Unexpected Dir",
-    //                            std::string{openFd.path()})
-    //             << std::endl;
-    // } else {
-    //   std::cout << std::format("fd: {} = {}", std::string{openFd.path()},
-    //                            formatPath(openFd.path()))
-    //             << std::endl;
-    // }
+    if (fs::exists(openFd)) {
+      std::cout << formatPath(openFd.path()) << '\n';
+    }
   }
 }
 } // namespace
